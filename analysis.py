@@ -20,10 +20,11 @@ def clipIt(vod, momentTime, sample_window, VOD_ID=None, suspenseSound=None):
     """
 
     dt_sample_window = datetime.timedelta(0, sample_window)
+    dt_sample_window_end = 10
 
     startTime = (momentTime - dt_sample_window).strftime(TIME_FORMAT)
 
-    endTime = (momentTime + dt_sample_window).strftime(TIME_FORMAT)
+    endTime = (momentTime + dt_sample_window_end).strftime(TIME_FORMAT)
     print(
         f"Found most engaged moment at: {startTime} to {endTime}",
     )
@@ -64,6 +65,7 @@ def gatherChat(chat_path, start_time, end_time):
     print(f"Total messages reviewing: {total_msgs}")
 
     data = {}
+    
     with open(chat_path) as fp:
         for cnt, line in enumerate(fp):
             timestamp = re.search(r"\[(.*?)\]", line).group(1)
@@ -77,21 +79,15 @@ def gatherChat(chat_path, start_time, end_time):
                     f"Anaysed messages: {cnt}",
                 )
 
+    #Create dataframe
     df_chat = pd.DataFrame.from_dict(data, "index")
+    
+    # Time format series
+    df_chat["timestamp"] = pd.to_datetime(df_chat["timestamp"].str.strip(), format=TIME_FORMAT
+    
     # print("Sample messages")
     # print(df_chat.tail())
-    # Time format series
-    df_chat["timestamp"] = pd.to_datetime(
-        df_chat["timestamp"].str.strip(), format=TIME_FORMAT
     )
-    df_chat = df_chat[
-        df_chat["timestamp"] > pd.to_datetime(start_time, format=TIME_FORMAT)
-    ]
-    df_chat = df_chat[
-        df_chat["timestamp"] < pd.to_datetime(end_time, format=TIME_FORMAT)
-    ]
-    # print("Sample messages")
-    # print(df_chat.head())
     return df_chat
 
 
@@ -113,19 +109,27 @@ def createIntroClip(title, screensize):
 
 def main(args):
     VOD_ID = args.vodID
-    START_TIME_FILTER = args.start
-    END_TIME_FILTER = args.end
     SAMPLE_WINDOW = args.sample_window
     INTRO_TITLE = args.title
     SUSPENSE_FILE = args.suspense
     OUTPUT_PATH = args.output_path
     VOD_PATH = args.input_path
+    EDIT_WINDOW = args.edit_window
 
-    # Download vod
+    # Import Chat
     print("Formatting chat data")
     chat_path = f"{VOD_PATH}/{str(VOD_ID)}/chat.log"
+    
+    # Import VOD
+    vod_file = f"{VOD_PATH}/{str(VOD_ID)}/vod.mkv"
+    vod = mpy.VideoFileClip(vod_file)
+    
+    START_TIME_FILTER = "00:00:00"
+    END_TIME = vod.duration
+    END_TIME_FILTER = datetime.datetime.fromtimestamp(int(END_TIME)).strftime('%H:%M:%S')
+    
     df_chat = gatherChat(chat_path, START_TIME_FILTER, END_TIME_FILTER)
-
+    
     # sample bin window to group by
     df_sample_chat = (
         df_chat.set_index("timestamp")
@@ -134,16 +138,9 @@ def main(args):
     )
 
     clips = []
-
-    # Get the vod
-    vod_file = f"{VOD_PATH}/{str(VOD_ID)}/vod.mkv"
-    vod = mpy.VideoFileClip(vod_file)
-
     introClip = createIntroClip(INTRO_TITLE, vod.size)
-
     clips.append(introClip)
 
-    EDIT_WINDOW = 10
     # Gather pogs emotes
     emotes_interest = [s.strip() for s in args.emotes.split(",")]
 
@@ -154,20 +151,22 @@ def main(args):
             .astype(str)
             .apply(lambda msg: len(re.findall(emote, msg)))
         )
-
-        print(f"Gathering pog moment: {emote}")
+        
         # Gather clips
-        pogMomentTime = (
-            df_sample_chat.sort_values([emote + "_count"]).iloc[[-1]].index.tolist()[0]
-        )
+        print(f"Gathering pog moment: {emote}")
+        #Sort the dataset by the highest emote and grab the timestamp from it
+        pogMomentTimes = []
+        pogMomentTimes = (df_sample_chat.sort_values([emote + "_count"]).tail(5))
+        pogMomentTimes = pogMomentTimes.sort_values("timestamp")
+        pogMomentTimes = pogMomentTimes.index.tolist()
 
-        clip = clipIt(vod, pogMomentTime, EDIT_WINDOW, VOD_ID, SUSPENSE_FILE)
-        # pogClip.write_videofile(f"{OUTPUT_PATH}/{str(VOD_ID)}/{emote}.mp4")
-        clips.append(clip)
+        for moments in pogMomentTimes:
+            #Clip  based on vod, timestamp, EDIT WINDOW = How much time before and after
+            clip = clipIt(vod, moments, EDIT_WINDOW, VOD_ID, SUSPENSE_FILE)
+            clips.append(clip)
 
     # deletin vod to free up mem
     del vod
-    # TODO: check if times overlap to much and if so choose the next top
 
     print("Editing vod clips")
     OUTPUT_PATH_VOD = f"{OUTPUT_PATH}/{str(VOD_ID)}"
@@ -193,12 +192,6 @@ if __name__ == "__main__":
         "--vodID", help="vodID downloaded for both .log and .mkv", type=int
     )
     parser.add_argument(
-        "--start",
-        default="00:00:00",
-        help="start time to clip chat + vod. Time format %H:%M:%S",
-        type=str,
-    )
-    parser.add_argument(
         "--end", help="end time to chat. Time format %H:%M:%S", type=str
     )
     parser.add_argument(
@@ -213,6 +206,14 @@ if __name__ == "__main__":
         const=1,
         default=15,
         help="Size of sample window to capture per moment. In seconds",
+        type=int,
+    )
+    parser.add_argument(
+        "--edit_window",
+        nargs="?",
+        const=1,
+        default=25,
+        help="How much time before and after moment to capture",
         type=int,
     )
     parser.add_argument(
